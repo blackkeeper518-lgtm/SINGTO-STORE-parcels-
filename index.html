@@ -1,66 +1,387 @@
-// 🎯 ท่อน handleFileUpload ที่ปรับปรับลอจิก Safe-Upsert
-const handleFileUpload = async (event) => {
-  const file = event.target.files[0];
-  if (!file || !supabaseClient) return;
-  setImportStatus({ processing: true, count: 0, logs: ["📡 เชื่อมต่อคลังแสงอาณาจักรสิงโต (godenboy8855 Project)..."] });
-  const reader = new FileReader();
-  reader.onload = async (e) => {
-    try {
-      const data = new Uint8Array(e.target.result);
-      const workbook = window.XLSX.read(data, { type: 'array' });
-      const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      const rows = window.XLSX.utils.sheet_to_json(sheet, { header: 1 });
-      if (rows.length === 0) throw new Error("ไฟล์ว่างเปล่า!");
-
-      const headers = rows[0].map(h => String(h || "").trim());
-      const idxTracking = headers.findIndex(h => h.includes("เลขพัสดุ") || h.includes("tracking"));
-      const idxPhone = headers.findIndex(h => h.includes("เบอร์ผู้รับ") || h.includes("phone"));
-      const idxName = headers.findIndex(h => h.includes("ชื่อผู้รับ") || h.includes("consignee"));
-      const idxAddress = headers.findIndex(h => h.includes("ที่อยู่ที่รับ") || h.includes("address"));
-      const idxCod = headers.findIndex(h => h.includes("ยอดCOD") || h.includes("cod"));
-
-      const batch = [];
-      rows.forEach((row, i) => {
-        if (i === 0) return;
-        const rawTrack = idxTracking !== -1 ? String(row[idxTracking] || "") : String(row[3] || "");
-        const track = rawTrack.trim().toUpperCase();
-        if (!track.startsWith("TH")) return;
-
-        const rawPhone = idxPhone !== -1 ? String(row[idxPhone] || "") : String(row[11] || "");
-        const phoneNum = rawPhone.replace(/\D/g, "");
-        const rawName = idxName !== -1 ? String(row[idxName] || "") : String(row[10] || "");
-        const rawAddr = idxAddress !== -1 ? String(row[idxAddress] || "") : String(row[13] || "");
-        const rawCod = idxCod !== -1 ? String(row[idxCod] || "0") : String(row[20] || "0");
-
-        if (phoneNum.length >= 8) {
-          batch.push({
-            tracking_number: track,
-            phone_number: phoneNum,
-            consignee: cleanName(rawName),
-            address: String(rawAddr),
-            cod_amount: parseFloat(String(rawCod).replace(/,/g, "")) || 0
-          });
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SINGTO STORE - VIP TRACKING & OPS</title>
+    <!-- Tailwind CSS & React CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Bai+Jamjuree:wght@300;400;600;700&display=swap');
+        .cyber-font { font-family: 'Orbitron', sans-serif; }
+        .thai-font { font-family: 'Bai Jamjuree', sans-serif; }
+        .glass-panel { background: rgba(20, 15, 0, 0.75); backdrop-filter: blur(20px); border: 1px solid rgba(255, 183, 3, 0.25); }
+        @property --angle { syntax: '<angle>'; initial-value: 0deg; inherits: false; }
+        .neon-border-running {
+          position: relative;
+          border: 2px solid transparent;
+          border-image: conic-gradient(from var(--angle), transparent 70%, #ffb703) 1;
+          animation: rotate-angle 3s linear infinite;
         }
-      });
+        @keyframes rotate-angle { to { --angle: 360deg; } }
+    </style>
+</head>
+<body class="bg-[#050400] text-white selection:bg-[#ffb703] overflow-x-hidden">
+    <div id="root"></div>
 
-      if (batch.length === 0) throw new Error("ไม่พบรายการพัสดุ TH ที่สมบูรณ์!");
-      
-      // 🎯 Safe Mode: พยายาม Upsert ถ้าติด Constraint ให้ Fallback เป็น Insert
-      let { error } = await supabaseClient.from("parcels").upsert(batch, { onConflict: 'tracking_number' });
-      
-      if (error && error.message.includes("ON CONFLICT")) {
-        // เผื่อ DB ไม่มี Unique Constraint สั่ง Insert ปกติ
-        const res = await supabaseClient.from("parcels").insert(batch);
-        error = res.error;
-      }
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+        
+        // 🎯 MATCHED WITH GODENBOY8855-DEBUG'S PROJECT
+        const SUPABASE_URL = "https://kpihxjmicmgwlvwjnxtg.supabase.co";
+        const SUPABASE_KEY = "sb_publishable_KSgCGrMIKE2YCTFctI--gw_tFwq-Cx1";
+        const ACCESS_KEY = "1234";
 
-      if (error) throw error;
+        function App() {
+          const [activeTab, setActiveTab] = useState("dashboard"); 
+          const [isAuthorized, setIsAuthorized] = useState(false);
+          const [passInput, setPassInput] = useState("");
+          const [showGate, setShowGate] = useState(false);
+          const [supabaseClient, setSupabaseClient] = useState(null);
+          const [loading, setLoading] = useState(false);
+          const [currentTime, setCurrentTime] = useState(new Date());
+          const [phone, setPhone] = useState("");
+          const [trackingData, setTrackingData] = useState(null);
+          const [orders, setOrders] = useState([]);
+          const [stats, setStats] = useState({ totalOrders: 0, totalCOD: 0, todayCOD: 0, aov: 0 });
+          const [importStatus, setImportStatus] = useState({ processing: false, count: 0, logs: [] });
+          const [uploadProgress, setUploadProgress] = useState(0);
 
-      setImportStatus({ processing: false, count: batch.length, logs: [`🔥 บรรจุเข้าตาราง parcels สำเร็จ ${batch.length} พิกัด!`] });
-      fetchAdminData();
-    } catch (err) {
-      setImportStatus({ processing: false, count: 0, logs: [`⚠️ ข้อผิดพลาด: ${err.message}`] });
-    }
-  };
-  reader.readAsArrayBuffer(file);
-};
+          useEffect(() => {
+            if (window.supabase) {
+              setSupabaseClient(window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY));
+            }
+            const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+            return () => clearInterval(timer);
+          }, []);
+
+          const fetchAdminData = async () => {
+            if (!supabaseClient || !isAuthorized) return;
+            setLoading(true);
+            try {
+              const { data, error } = await supabaseClient
+                .from("parcels")
+                .select("*")
+                .order("created_at", { ascending: false });
+              if (!error && data) {
+                setOrders(data);
+                const totalCOD = data.reduce((sum, item) => sum + Number(item.cod_amount || 0), 0);
+                const todayStr = new Date().toISOString().split('T')[0];
+                const todayCOD = data
+                  .filter(item => item.created_at && item.created_at.startsWith(todayStr))
+                  .reduce((sum, item) => sum + Number(item.cod_amount || 0), 0);
+                const totalOrders = data.length;
+                const aov = totalOrders > 0 ? totalCOD / totalOrders : 0;
+                setStats({ totalOrders, totalCOD, todayCOD, aov });
+              }
+            } finally {
+              setLoading(false);
+            }
+          };
+
+          useEffect(() => {
+            if (isAuthorized) fetchAdminData();
+          }, [supabaseClient, isAuthorized]);
+
+          const handleTabChange = (tab) => {
+            if ((tab === 'dashboard' || tab === 'ops') && !isAuthorized) {
+              setShowGate(true);
+              return;
+            }
+            setActiveTab(tab);
+            setShowGate(false);
+          };
+
+          const verifyAccess = () => {
+            if (passInput === ACCESS_KEY) {
+              setIsAuthorized(true);
+              setShowGate(false);
+              setPassInput("");
+              setActiveTab("dashboard");
+            } else {
+              setPassInput("");
+            }
+          };
+
+          const cleanName = (n) => n ? String(n).replace(/^[0-9\s.]+/, "").replace(/^(คุณ|นาย|นางสาว|นาง|👤)\s*/gi, "").trim() : "ลูกค้า VIP";
+
+          const handleSearch = async () => {
+            if (!supabaseClient || phone.trim().length < 4) return;
+            setLoading(true);
+            setTrackingData(null);
+            try {
+              const { data } = await supabaseClient
+                .from("parcels")
+                .select("consignee, tracking_number, cod_amount, address")
+                .or(`phone_number.ilike.%${phone.trim()}%,tracking_number.ilike.%${phone.trim()}%`)
+                .order("created_at", { ascending: false })
+                .limit(1)
+                .maybeSingle();
+              if (data) setTrackingData(data);
+            } finally {
+              setLoading(false);
+            }
+          };
+
+          // 🎯 BATCH CHUNK ENGINE (หั่นยิงทีละ 200 รายการ ไม่อืด ไม่ลุ่ม 100%)
+          const handleFileUpload = async (event) => {
+            const file = event.target.files[0];
+            if (!file || !supabaseClient) return;
+            
+            setUploadProgress(1);
+            setImportStatus({ processing: true, count: 0, logs: ["📡 เชื่อมต่อคลังแสงอาณาจักรสิงโต (godenboy8855 Project)..."] });
+            
+            const reader = new FileReader();
+            reader.onload = async (e) => {
+              try {
+                const data = new Uint8Array(e.target.result);
+                const workbook = window.XLSX.read(data, { type: 'array' });
+                const sheet = workbook.Sheets[workbook.SheetNames[0]];
+                const rows = window.XLSX.utils.sheet_to_json(sheet, { header: 1 });
+                if (rows.length < 2) throw new Error("ไม่พบแถวข้อมูลในไฟล์");
+
+                const headers = rows[0].map(h => String(h || "").trim());
+                const idxTracking = headers.findIndex(h => h.includes("เลขพัสดุ") || h.includes("tracking"));
+                const idxPhone = headers.findIndex(h => h.includes("เบอร์ผู้รับ") || h.includes("phone"));
+                const idxName = headers.findIndex(h => h.includes("ชื่อผู้รับ") || h.includes("consignee"));
+                const idxAddress = headers.findIndex(h => h.includes("ที่อยู่ที่รับ") || h.includes("address"));
+                const idxCod = headers.findIndex(h => h.includes("ยอดCOD") || h.includes("cod"));
+
+                const totalBatchList = [];
+                rows.forEach((row, i) => {
+                  if (i === 0) return;
+                  const rawTrack = idxTracking !== -1 ? String(row[idxTracking] || "") : String(row[3] || "");
+                  const track = rawTrack.trim().toUpperCase();
+                  if (!track.startsWith("TH")) return;
+
+                  const rawPhone = idxPhone !== -1 ? String(row[idxPhone] || "") : String(row[11] || "");
+                  const phoneNum = rawPhone.replace(/\D/g, "");
+                  const rawName = idxName !== -1 ? String(row[idxName] || "") : String(row[10] || "");
+                  const rawAddr = idxAddress !== -1 ? String(row[idxAddress] || "") : String(row[13] || "");
+                  const rawCod = idxCod !== -1 ? String(row[idxCod] || "0") : String(row[20] || "0");
+
+                  if (phoneNum.length >= 8) {
+                    totalBatchList.push({
+                      tracking_number: track,
+                      phone_number: phoneNum,
+                      consignee: cleanName(rawName),
+                      address: String(rawAddr),
+                      cod_amount: parseFloat(String(rawCod).replace(/,/g, "")) || 0
+                    });
+                  }
+                });
+
+                if (totalBatchList.length === 0) throw new Error("ไม่พบรายการพัสดุ TH ที่สมบูรณ์!");
+
+                const BATCH_SIZE = 200;
+                const totalItems = totalBatchList.length;
+                let offset = 0;
+
+                while (offset < totalItems) {
+                  const chunk = totalBatchList.slice(offset, offset + BATCH_SIZE);
+                  
+                  let { error } = await supabaseClient
+                    .from("parcels")
+                    .upsert(chunk, { onConflict: 'tracking_number' });
+                    
+                  if (error && error.message.includes("ON CONFLICT")) {
+                    const res = await supabaseClient.from("parcels").insert(chunk);
+                    error = res.error;
+                  }
+
+                  if (error) throw error;
+
+                  offset += chunk.length;
+                  const currentPercent = Math.round((offset / totalItems) * 100);
+                  setUploadProgress(currentPercent);
+                  setImportStatus(prev => ({
+                    ...prev,
+                    logs: [`📦 ซิงค์แพ็กเก็ตเสร็จสิ้นแล้ว ${offset} / ${totalItems} แถว (${currentPercent}%)`]
+                  }));
+                }
+
+                setImportStatus({ processing: false, count: totalItems, logs: [`🔥 บรรจุเข้าตาราง parcels สำเร็จ ${totalItems} พิกัดเรียบร้อย!`] });
+                setUploadProgress(0);
+                fetchAdminData();
+              } catch (err) {
+                setImportStatus({ processing: false, count: 0, logs: [`⚠️ ข้อผิดพลาด: ${err.message}`] });
+                setUploadProgress(0);
+              }
+            };
+            reader.readAsArrayBuffer(file);
+          };
+
+          return (
+            <div className="min-h-screen relative max-w-6xl mx-auto px-4 py-8 md:py-12 pb-32">
+              <div className="flex justify-between items-center mb-8">
+                <div className="space-y-1">
+                  <p className="cyber-font text-[9px] text-yellow-600/70 tracking-[0.3em] font-black italic">SINGTO_STORE_OS: ONLINE</p>
+                  {isAuthorized && (
+                    <button onClick={() => setIsAuthorized(false)} className="text-[8px] cyber-font text-red-500 font-black tracking-widest uppercase hover:underline">Terminate_Session</button>
+                  )}
+                </div>
+                <div className="neon-border-running px-6 py-3 bg-black/80 rounded-sm shadow-[0_0_30px_rgba(255,183,3,0.15)]">
+                  <p className="cyber-font text-[9px] text-[#ffb703] tracking-[0.2em] font-black mb-1 opacity-70 uppercase">Singto_Time</p>
+                  <p className="cyber-font text-xl md:text-3xl font-black text-white tracking-widest leading-none">
+                    {currentTime.toLocaleTimeString('en-US', { hour12: false })}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex justify-center mb-16">
+                <div className="inline-flex glass-panel p-1.5 rounded-3xl border-[#ffb703]/30 shadow-[0_0_40px_rgba(0,0,0,0.5)]">
+                  {[
+                    { id: 'dashboard', label: 'STATS', icon: '📊' },
+                    { id: 'tracking', label: 'TRACK', icon: '🛰️' },
+                    { id: 'ops', label: 'OPS', icon: '📥' }
+                  ].map(tab => (
+                    <button
+                      key={tab.id}
+                      onClick={() => handleTabChange(tab.id)}
+                      className={`px-8 py-4 rounded-2xl cyber-font text-[10px] md:text-xs font-black tracking-[0.3em] transition-all duration-500 ${activeTab === tab.id ? 'bg-[#ffb703] text-black font-extrabold shadow-[0_0_25px_#ffb703] scale-105' : 'text-gray-400 hover:text-white'}`}
+                    >
+                      {tab.icon} {tab.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {showGate && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[#050400]/98 backdrop-blur-3xl">
+                  <div className="glass-panel p-16 md:p-24 rounded-[3rem] border-[#ffb703]/50 text-center max-w-lg w-full mx-4 shadow-[0_0_100px_rgba(0,0,0,1)]">
+                    <h2 className="cyber-font text-2xl md:text-3xl font-black text-white mb-12 italic tracking-tighter uppercase">Authority_Verification</h2>
+                    <input 
+                      type="password"
+                      value={passInput}
+                      onChange={(e) => setPassInput(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && verifyAccess()}
+                      className="w-full bg-black/50 border-b-4 border-[#ffb703] p-6 text-center text-5xl cyber-font tracking-[0.8em] outline-none text-[#ffb703] mb-12"
+                      placeholder="****"
+                      autoFocus
+                    />
+                    <div className="flex gap-6">
+                      <button onClick={() => setShowGate(false)} className="flex-1 py-4 cyber-font text-[10px] text-gray-500 uppercase tracking-widest font-black">Abort</button>
+                      <button onClick={verifyAccess} className="flex-1 py-4 bg-[#ffb703] text-black cyber-font text-[10px] font-black rounded-xl shadow-[0_0_30px_#ffb703] uppercase">Authorize</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {activeTab === "dashboard" && isAuthorized && (
+                <div className="space-y-10 animate-in fade-in duration-500">
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                    <div className="neon-border-running glass-panel rounded-3xl p-8">
+                      <p className="cyber-font text-[9px] text-gray-400 tracking-widest uppercase font-black">Total_Wealth</p>
+                      <p className="thai-font text-4xl font-black italic text-white mt-4">฿{stats.totalCOD.toLocaleString()}</p>
+                    </div>
+                    <div className="neon-border-running glass-panel rounded-3xl p-8 border-[#ffb703]">
+                      <p className="cyber-font text-[9px] text-[#ffb703] tracking-widest uppercase font-black italic">Today_Revenue</p>
+                      <p className="thai-font text-4xl font-black italic text-white mt-4">฿{stats.todayCOD.toLocaleString()}</p>
+                    </div>
+                    <div className="glass-panel rounded-3xl p-8 border-l-4 border-yellow-500/30">
+                      <p className="cyber-font text-[9px] text-gray-400 tracking-widest uppercase font-black">Total_Conquests</p>
+                      <p className="thai-font text-4xl font-black italic text-[#ffb703] mt-4">{stats.totalOrders.toLocaleString()}</p>
+                    </div>
+                    <div className="glass-panel rounded-3xl p-8 border-l-4 border-yellow-500/30">
+                      <p className="cyber-font text-[9px] text-gray-400 tracking-widest uppercase font-black">Average_Bill</p>
+                      <p className="thai-font text-4xl font-black italic text-white mt-4">฿{Math.round(stats.aov).toLocaleString()}</p>
+                    </div>
+                  </div>
+
+                  <div className="glass-panel p-6 rounded-2xl space-y-4">
+                    <h3 className="cyber-font text-sm font-bold text-[#ffb703]">STORAGE LOGS DATA LEDGER (PARCELS)</h3>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs thai-font">
+                        <thead>
+                          <tr className="text-gray-500 border-b border-white/5 cyber-font text-[10px]">
+                            <th className="py-3 px-2">TRACKING ID</th>
+                            <th className="py-3 px-2">CONSIGNEE NAME</th>
+                            <th className="py-3 px-2">PHONE NUMBER</th>
+                            <th className="py-3 px-2">ADDRESS DATA</th>
+                            <th className="py-3 px-2">COD AMOUNT</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {orders.length === 0 ? (
+                            <tr><td colSpan="5" className="text-center py-6 text-gray-500">NO SYSTEM RECORD ENTRIES DETECTED</td></tr>
+                          ) : orders.slice(0, 50).map((order, i) => (
+                            <tr key={i} className="border-b border-white/5 hover:bg-white/5 transition">
+                              <td className="py-3 px-2 cyber-font text-[#ffb703] font-bold">{order.tracking_number}</td>
+                              <td className="py-3 px-2 text-white font-bold">{order.consignee}</td>
+                              <td className="py-3 px-2 text-gray-300">{order.phone_number || "-"}</td>
+                              <td className="py-3 px-2 text-gray-400 max-w-xs truncate">{order.address || "-"}</td>
+                              <td className="py-3 px-2 text-emerald-400 font-bold">฿{Number(order.cod_amount || 0).toLocaleString()}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {activeTab === "tracking" && (
+                <div className="max-w-2xl mx-auto glass-panel p-10 md:p-14 rounded-[3rem] animate-in fade-in duration-500">
+                  <h2 className="cyber-font text-center text-xl text-[#ffb703] font-black tracking-[0.3em] uppercase mb-8">SINGTO VIP TRACKING</h2>
+                  <div className="flex gap-4 mb-8">
+                    <input 
+                      type="text" 
+                      value={phone} 
+                      onChange={(e) => setPhone(e.target.value)} 
+                      onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                      placeholder="กรอกเบอร์โทรศัพท์..." 
+                      className="flex-1 bg-black/60 border border-[#ffb703]/40 p-5 rounded-2xl text-center text-xl thai-font outline-none focus:border-[#ffb703]"
+                    />
+                    <button onClick={handleSearch} className="px-8 bg-[#ffb703] text-black font-black cyber-font text-xs rounded-2xl shadow-[0_0_20px_#ffb703]">SEARCH</button>
+                  </div>
+                  {trackingData && (
+                    <div className="bg-black/80 p-6 rounded-2xl border border-yellow-500/30 space-y-3 thai-font text-center">
+                      <p className="text-gray-400 text-sm">ผู้รับ: <span className="text-white font-bold">{trackingData.consignee}</span></p>
+                      <p className="text-yellow-400 text-2xl font-black cyber-font tracking-widest">{trackingData.tracking_number}</p>
+                      <p className="text-gray-400 text-sm">ยอด COD: <span className="text-emerald-400 font-bold">฿{trackingData.cod_amount}</span></p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {activeTab === "ops" && isAuthorized && (
+                <div className="max-w-2xl mx-auto glass-panel p-12 rounded-[3rem] text-center border-dashed border-2 border-[#ffb703] animate-in fade-in duration-500">
+                  <h2 className="cyber-font text-xl text-[#ffb703] font-black tracking-widest mb-6 uppercase">DROP FLASH EXCEL PAYLOAD</h2>
+                  <p className="thai-font text-gray-400 text-sm mb-8">รองรับไฟล์ Flash Express (.xlsx / .csv) ยัดเข้าตาราง parcels ทันทีใน 3 วินาที</p>
+                  
+                  {uploadProgress > 0 && (
+                    <div className="space-y-2 mb-6">
+                      <div className="flex justify-between text-xs cyber-font text-[#ffb703]">
+                        <span>⚡ DATA PACKETS TRANSMITTING...</span>
+                        <span>{uploadProgress}%</span>
+                      </div>
+                      <div className="w-full bg-black/60 h-2 rounded-full overflow-hidden border border-[#ffb703]/30">
+                        <div className="h-full bg-gradient-to-r from-[#ffb703] to-[#ffe066] transition-all duration-200" style={{ width: `${uploadProgress}%` }}></div>
+                      </div>
+                    </div>
+                  )}
+
+                  <input type="file" accept=".xlsx, .xls, .csv" onChange={handleFileUpload} className="hidden" id="fileInput" />
+                  <label htmlFor="fileInput" className="cursor-pointer inline-block px-10 py-5 bg-[#ffb703] text-black font-black cyber-font text-xs rounded-2xl shadow-[0_0_30px_#ffb703]">
+                    CHOOSE FILE PAYLOAD
+                  </label>
+                  {importStatus.logs.length > 0 && (
+                    <div className="mt-8 p-4 bg-black/80 rounded-xl thai-font text-xs text-yellow-400 text-left max-h-48 overflow-y-auto">
+                      {importStatus.logs.map((log, idx) => <p key={idx}>{`> ${log}`}</p>)}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        }
+
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+</body>
+</html>
