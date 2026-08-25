@@ -31,8 +31,10 @@
 
     <script type="text/babel">
         const { useState, useEffect } = React;
-        const SUPABASE_URL = "https://nlgecesyjcrrqwiitlyt.supabase.co";
-        const SUPABASE_KEY = "sb_publishable_1agyo85-Uxq1VAllYjl1gg_M_utlMbw";
+        
+        // 🎯 MATCHED WITH GODENBOY8855-DEBUG'S PROJECT
+        const SUPABASE_URL = "https://kpihxjmicmgwlvwjnxtg.supabase.co";
+        const SUPABASE_KEY = "sb_publishable_KSgCGrMIKE2YCTFctI--gw_tFwq-Cx1";
         const ACCESS_KEY = "1234";
 
         function App() {
@@ -126,7 +128,7 @@
           const handleFileUpload = async (event) => {
             const file = event.target.files[0];
             if (!file || !supabaseClient) return;
-            setImportStatus({ processing: true, count: 0, logs: ["📡 เชื่อมต่อคลังแสงอาณาจักรสิงโต (SINGTO STORE)..."] });
+            setImportStatus({ processing: true, count: 0, logs: ["📡 เชื่อมต่อคลังแสงอาณาจักรสิงโต (godenboy8855 Project)..."] });
             const reader = new FileReader();
             reader.onload = async (e) => {
               try {
